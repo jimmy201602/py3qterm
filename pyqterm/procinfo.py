@@ -24,10 +24,13 @@ class ProcessInfo(object):
 			stat = f.read().split()
 			f.close()
 			cmd = stat[1]
-			ppid = int(stat[3])
-			parent[pid] = ppid
-			children.setdefault(ppid, []).append(pid)
-			commands[pid] = cmd
+			try:
+				ppid = int(stat[3])
+				parent[pid] = ppid
+				children.setdefault(ppid, []).append(pid)
+				commands[pid] = cmd
+			except:
+				pass
 		self.parent = parent
 		self.children = children
 		self.commands = commands
