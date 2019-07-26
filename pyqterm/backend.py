@@ -1392,7 +1392,10 @@ class Multiplexer(object):
         d = term.read()
         if d:
             try:
-                os.write(fd, d)
+                if isinstance(d,str):
+                    os.write(fd,d.encode())
+                else:
+                    os.write(fd, d)
             except (IOError, OSError):
                 return False
         return True
