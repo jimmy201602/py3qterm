@@ -16,7 +16,7 @@ import signal
 import struct
 import select
 import subprocess
-
+import tty
 
 __version__ = "0.1"
 
@@ -1224,7 +1224,7 @@ def synchronized(func):
 class Multiplexer(object):
 
 
-    def __init__(self, cmd="/bin/bash", env_term = "xterm-color", timeout=60*60*24):
+    def __init__(self, cmd="/bin/bash", env_term = "xterm-color", timeout = 60*60*24, client_callback = None):
         # Set Linux signal handler
         if sys.platform in ("linux2", "linux3"):
             self.sigchldhandler = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
@@ -1233,6 +1233,7 @@ class Multiplexer(object):
         self.cmd = cmd
         self.env_term = env_term
         self.timeout = timeout
+        self.client_callback = client_callback
 
         # Supervisor thread
         self.signal_stop = 0
@@ -1388,6 +1389,8 @@ class Multiplexer(object):
             return False
         term = self.session[sid]['term']
         term.write(d)
+        if self.client_callback:
+            self.client_callback(d)
         # Read terminal response
         d = term.read()
         if d:
@@ -1463,7 +1466,8 @@ class Multiplexer(object):
             for fd in i:
                 sid = fd2sid[fd]
                 self.proc_read(sid)
-                self.session[sid]["changed"] = time.time()
+                if sid in self.session.keys():
+                    self.session[sid]["changed"] = time.time()
             if len(i):
                 time.sleep(0.002)
         self.proc_buryall()
@@ -1489,9 +1493,9 @@ class Session(object):
         Session._mux.stop()
 
 
-    def __init__(self, cmd=None, width=80, height=24):
+    def __init__(self, cmd=None, width=80, height=24,client_callback=None):
         if not Session._mux:
-            Session._mux = Multiplexer()
+            Session._mux = Multiplexer(client_callback=client_callback)
         self._session_id = "%s-%s" % (time.time(), id(self))
         self._width = width
         self._height = height
@@ -1546,13 +1550,68 @@ class Session(object):
 
 
 if __name__ == "__main__":
-    w, h = (80,24)
-    cmd = "/bin/ls --color=yes"
-    multiplex = Multiplexer(cmd)
-    sid = "session-id-%s"
-    if multiplex.proc_keepalive(sid, w, h):
-        #multiplex.proc_write(sid, k)
-        time.sleep(1)
-        #print multiplex.proc_dump(sid)
-        print("Output:", multiplex.proc_dump(sid))
-    multiplex.stop()
+    # w, h = (80,24)
+    # cmd = "/bin/ls --color=yes"
+    # multiplex = Multiplexer(cmd)
+    # sid = "session-id-%s"
+    # if multiplex.proc_keepalive(sid, w, h):
+        # #multiplex.proc_write(sid, k)
+        # time.sleep(1)
+        # #print multiplex.proc_dump(sid)
+        # print("Output:", multiplex.proc_dump(sid))
+    # multiplex.stop()
+
+    # session = Session()
+    # session.start(cmd='/bin/bash')
+    # session.write(b'ls -l /tmp\r')
+    # time.sleep(1)
+    # print(session.dump())
+    # print(session._mux.session[session._session_id])
+    # session.close()
+    # session.close_all()
+
+    def client_callback(data):
+        if isinstance(data,bytes):
+            data = data.decode()
+        sys.stdout.write(data)
+        sys.stdout.flush()
+
+    shell_cmd = '/bin/bash'
+    print("**Type Control-D Control-D to exit**", file=sys.stderr)
+    # Determine terminal width, height
+    height, width = struct.unpack("hh", fcntl.ioctl(pty.STDOUT_FILENO, termios.TIOCGWINSZ, "1234"))
+    if not width or not height:
+        try:
+            height, width = [int(os.getenv(var)) for var in ("LINES", "COLUMNS")]
+        except Exception:
+            height, width = 25, 80
+
+    Term_manager = Session(client_callback=client_callback)
+    Term_manager.start(cmd=shell_cmd)
+    Term_manager.resize(width, height)
+    Term_attr = termios.tcgetattr(pty.STDIN_FILENO)
+    try:
+        tty.setraw(pty.STDIN_FILENO)
+        expectEOF = False
+        # Term_manager.write(b'echo hello\r')
+        while True:
+            if not Term_manager.is_alive():
+                raise EOFError
+            data = os.read(pty.STDIN_FILENO, 1024)
+            if data[0] == 4:
+                if expectEOF: raise EOFError
+                expectEOF = True
+            else:
+                expectEOF = False
+            if not data:
+                raise EOFError
+            Term_manager.write(data)
+            new_height, new_width = struct.unpack("hh", fcntl.ioctl(pty.STDOUT_FILENO, termios.TIOCGWINSZ, "1234"))
+            if new_height != height or new_width != width:
+                Term_manager.resize(new_width, new_height)
+    except EOFError:
+        Term_manager.close()
+        Term_manager.close_all()
+    finally:
+        # Restore terminal attributes
+        termios.tcsetattr(pty.STDIN_FILENO, termios.TCSANOW, Term_attr)
